@@ -1,0 +1,316 @@
+[
+  {
+    "category": "model",
+    "name": "DINOv2 ViT-B/14 (dinov2_vitb14_pretrain.pth)",
+    "version": "dinov2_vitb14_pretrain",
+    "source_url": "https://dl.fbaipublicfiles.com/dinov2/dinov2_vitb14/dinov2_vitb14_pretrain.pth",
+    "license": "Apache-2.0",
+    "requires_registration": false,
+    "expected_size_bytes": null,
+    "sha256": null,
+    "download": {
+      "method": "url",
+      "command_example": "curl -L --retry 8 --retry-all-errors --continue-at - -o pretrained_models/hub/checkpoints/dinov2_vitb14_pretrain.pth https://dl.fbaipublicfiles.com/dinov2/dinov2_vitb14/dinov2_vitb14_pretrain.pth"
+    },
+    "install_path": "pretrained_models/hub/checkpoints/",
+    "used_in": [
+      "RefCode models: torch.hub.load('facebookresearch/dinov2','dinov2_vitb14')",
+      "frf_project model=dinov2_vitb"
+    ],
+    "python_deps": [
+      "torch",
+      "torchvision"
+    ]
+  },
+  {
+    "category": "model",
+    "name": "DINOv2 repository (facebookresearch/dinov2)",
+    "version": "main",
+    "source_url": "https://github.com/facebookresearch/dinov2",
+    "license": "Apache-2.0",
+    "requires_registration": false,
+    "expected_size_bytes": null,
+    "sha256": null,
+    "download": {
+      "method": "git",
+      "command_example": "git clone --depth 1 --branch main https://github.com/facebookresearch/dinov2.git pretrained_models/hub/facebookresearch_dinov2_main"
+    },
+    "install_path": "pretrained_models/hub/facebookresearch_dinov2_main/",
+    "used_in": [
+      "torch.hub local source=local fallback"
+    ],
+    "python_deps": [
+      "git"
+    ]
+  },
+  {
+    "category": "model",
+    "name": "CLIP ViT-B/16 weights (ViT-B-16.pt)",
+    "version": "ViT-B/16",
+    "source_url": "https://openaipublic.azureedge.net/clip/models/5806e77cd80f8b59890b7e101eabd078d9fb84e4c7b2c6a0c70d3b7e83a9c6db/ViT-B-16.pt",
+    "license": "MIT",
+    "requires_registration": false,
+    "expected_size_bytes": null,
+    "sha256": null,
+    "download": {
+      "method": "url",
+      "command_example": "curl -L --retry 8 --retry-all-errors --continue-at - -o pretrained_models/clip/ViT-B-16.pt https://openaipublic.azureedge.net/clip/models/5806e77cd80f8b59890b7e101eabd078d9fb84e4c7b2c6a0c70d3b7e83a9c6db/ViT-B-16.pt"
+    },
+    "install_path": "pretrained_models/clip/",
+    "used_in": [
+      "RefCode models: clip.load('ViT-B/16') via openai/CLIP"
+    ],
+    "python_deps": [
+      "clip (openai/CLIP)",
+      "torch"
+    ]
+  },
+  {
+    "category": "model",
+    "name": "OpenAI CLIP repository",
+    "version": "dcba3cb2e2827b402d2701e7e1c7d9fed8a20ef1",
+    "source_url": "https://github.com/openai/CLIP",
+    "license": "MIT",
+    "requires_registration": false,
+    "expected_size_bytes": null,
+    "sha256": null,
+    "download": {
+      "method": "git",
+      "command_example": "git clone https://github.com/openai/CLIP.git pretrained_models/clip_repo && (cd pretrained_models/clip_repo && git checkout dcba3cb2e2827b402d2701e7e1c7d9fed8a20ef1)"
+    },
+    "install_path": "pretrained_models/clip_repo/",
+    "used_in": [
+      "RefCode requirements.txt pins openai/CLIP commit"
+    ],
+    "python_deps": [
+      "git"
+    ]
+  },
+  {
+    "category": "model",
+    "name": "MoCo-v3 ResNet-50 weights (r-50-1000ep.pth.tar)",
+    "version": "r-50-1000ep",
+    "source_url": "https://dl.fbaipublicfiles.com/moco-v3/r-50-1000ep/r-50-1000ep.pth.tar",
+    "license": "CC BY-NC 4.0",
+    "requires_registration": false,
+    "expected_size_bytes": null,
+    "sha256": null,
+    "download": {
+      "method": "url",
+      "command_example": "curl -L --retry 8 --retry-all-errors --continue-at - -o pretrained_models/hub/checkpoints/mocov3_r50_1000ep.pth.tar https://dl.fbaipublicfiles.com/moco-v3/r-50-1000ep/r-50-1000ep.pth.tar"
+    },
+    "install_path": "pretrained_models/hub/checkpoints/",
+    "used_in": [
+      "frf_project src/models: mocov3_resnet50"
+    ],
+    "python_deps": [
+      "torch",
+      "torchvision"
+    ]
+  },
+  {
+    "category": "model",
+    "name": "EVA-02 ViT-B weights (timm model eva02_base_patch14_224.mim_in22k)",
+    "version": "eva02_base_patch14_224.mim_in22k",
+    "source_url": "https://huggingface.co/",
+    "license": "MIT",
+    "requires_registration": false,
+    "expected_size_bytes": null,
+    "sha256": null,
+    "download": {
+      "method": "timm",
+      "command_example": "python -c \"import timm; timm.create_model('eva02_base_patch14_224.mim_in22k', pretrained=True)\""
+    },
+    "install_path": "pretrained_models (timm/hf cache under HF_HOME/TORCH_HOME)",
+    "used_in": [
+      "RefCode models: timm.create_model('eva02_base_patch14_224.mim_in22k', pretrained=True)"
+    ],
+    "python_deps": [
+      "timm",
+      "huggingface-hub",
+      "torch"
+    ]
+  },
+  {
+    "category": "dataset",
+    "name": "Flowers-102",
+    "version": "torchvision.datasets.Flowers102",
+    "source_url": "https://pytorch.org/vision/stable/generated/torchvision.datasets.Flowers102.html",
+    "license": "Not specified (paper notes: no license given)",
+    "requires_registration": false,
+    "expected_size_bytes": null,
+    "sha256": null,
+    "download": {
+      "method": "torchvision",
+      "command_example": "python -c \"import torchvision; torchvision.datasets.Flowers102(root='datasets/flowers102', split='train', download=True); torchvision.datasets.Flowers102(root='datasets/flowers102', split='test', download=True)\""
+    },
+    "install_path": "datasets/flowers102/",
+    "used_in": [
+      "RefCode dataloaders: Flowers102(download=True)",
+      "frf_project dataset=flowers102"
+    ],
+    "python_deps": [
+      "torchvision"
+    ]
+  },
+  {
+    "category": "dataset",
+    "name": "Food-101",
+    "version": "torchvision.datasets.Food101",
+    "source_url": "https://pytorch.org/vision/stable/generated/torchvision.datasets.Food101.html",
+    "license": "Not specified (paper notes: no license given)",
+    "requires_registration": false,
+    "expected_size_bytes": null,
+    "sha256": null,
+    "download": {
+      "method": "torchvision",
+      "command_example": "python -c \"import torchvision; torchvision.datasets.Food101(root='datasets/food101', split='train', download=True); torchvision.datasets.Food101(root='datasets/food101', split='test', download=True)\""
+    },
+    "install_path": "datasets/food101/",
+    "used_in": [
+      "RefCode dataloaders: Food101(download=True)"
+    ],
+    "python_deps": [
+      "torchvision"
+    ]
+  },
+  {
+    "category": "dataset",
+    "name": "ImageNet-1k",
+    "version": "ILSVRC2012",
+    "source_url": "https://www.image-net.org/",
+    "license": "ImageNet non-commercial (requires agreement)",
+    "requires_registration": true,
+    "expected_size_bytes": null,
+    "sha256": null,
+    "download": {
+      "method": "manual",
+      "command_example": "Place ImageNet under datasets/imagenet with ImageFolder layout."
+    },
+    "install_path": "datasets/imagenet/",
+    "used_in": [
+      "RefCode dataloaders: ImageNetSubset(data_root/.../imagenet)"
+    ],
+    "python_deps": []
+  },
+  {
+    "category": "dataset",
+    "name": "ImageNet-100 subset list",
+    "version": "imagenet100.txt (class list)",
+    "source_url": "file:///opt/data/private/data_distillation/RefCode/Dataset Distillation for Pre-Trained Self-Supervised Vision Models/src/data/dataloaders/imagenet100.txt",
+    "license": "Derived from ImageNet",
+    "requires_registration": true,
+    "expected_size_bytes": null,
+    "sha256": null,
+    "download": {
+      "method": "local_file",
+      "command_example": "Use provided imagenet100.txt to define subset."
+    },
+    "install_path": "RefCode/src/data/dataloaders/imagenet100.txt",
+    "used_in": [
+      "RefCode ImageNetSubset subset_name=imagenet-100"
+    ],
+    "python_deps": []
+  },
+  {
+    "category": "dataset",
+    "name": "Spawrious",
+    "version": "o2o_hard (spawrious benchmark)",
+    "source_url": "https://github.com/aengusl/spawrious",
+    "license": "CC0-1.0 (paper notes)",
+    "requires_registration": false,
+    "expected_size_bytes": null,
+    "sha256": null,
+    "download": {
+      "method": "git_and_package",
+      "command_example": "pip install 'spawrious @ git+https://github.com/aengusl/spawrious.git@651e90415bfb414a5b6579cb1f53b83e6bb8c165'"
+    },
+    "install_path": "datasets/spawrious/ (managed by spawrious package)",
+    "used_in": [
+      "RefCode dataloaders: spawrious.torch.SpawriousBenchmark(root=data_root/spawrious)"
+    ],
+    "python_deps": [
+      "spawrious (pinned git commit)"
+    ]
+  },
+  {
+    "category": "dataset",
+    "name": "Waterbirds (WILDS)",
+    "version": "waterbirds",
+    "source_url": "https://wilds.stanford.edu/",
+    "license": "MIT (WILDS repo; dataset-specific license may apply)",
+    "requires_registration": false,
+    "expected_size_bytes": null,
+    "sha256": null,
+    "download": {
+      "method": "wilds",
+      "command_example": "python -c \"from wilds import get_dataset; get_dataset(dataset='waterbirds', root_dir='datasets/waterbirds', download=True)\""
+    },
+    "install_path": "datasets/waterbirds/",
+    "used_in": [
+      "RefCode dataloaders: Waterbirds"
+    ],
+    "python_deps": [
+      "wilds"
+    ]
+  },
+  {
+    "category": "dataset",
+    "name": "Stanford Dogs",
+    "version": "Stanford Dogs Dataset",
+    "source_url": "http://vision.stanford.edu/aditya86/ImageNetDogs/",
+    "license": "Presumed similar to ImageNet (paper notes)",
+    "requires_registration": false,
+    "expected_size_bytes": null,
+    "sha256": null,
+    "download": {
+      "method": "url_manual",
+      "command_example": "Download from project website and place under datasets/stanforddogs/."
+    },
+    "install_path": "datasets/stanforddogs/",
+    "used_in": [
+      "RefCode dataloaders: StanfordDogs"
+    ],
+    "python_deps": []
+  },
+  {
+    "category": "dataset",
+    "name": "CUB-200-2011",
+    "version": "CUB_200_2011",
+    "source_url": "https://www.vision.caltech.edu/datasets/cub_200_2011/",
+    "license": "Not specified (paper notes)",
+    "requires_registration": false,
+    "expected_size_bytes": null,
+    "sha256": null,
+    "download": {
+      "method": "url_manual",
+      "command_example": "Download from project website and place under datasets/cub2011/."
+    },
+    "install_path": "datasets/cub2011/",
+    "used_in": [
+      "RefCode dataloaders: Cub2011"
+    ],
+    "python_deps": []
+  },
+  {
+    "category": "dataset",
+    "name": "ArtBench-10 (imagefolder split tar)",
+    "version": "artbench-10-imagefolder-split",
+    "source_url": "https://artbench.eecs.berkeley.edu/",
+    "license": "MIT (repo) + Fair Use sources (paper notes)",
+    "requires_registration": false,
+    "expected_size_bytes": null,
+    "sha256": null,
+    "download": {
+      "method": "url",
+      "command_example": "curl -L --retry 8 --retry-all-errors --continue-at - -o datasets/artbench/artbench-10-imagefolder-split.tar https://artbench.eecs.berkeley.edu/files/artbench-10-imagefolder-split.tar"
+    },
+    "install_path": "datasets/artbench/{train,test}/",
+    "used_in": [
+      "RefCode dataloaders: ArtBench.verify_files() downloads and extracts"
+    ],
+    "python_deps": [
+      "torchvision"
+    ]
+  }
+]
