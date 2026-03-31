@@ -68,7 +68,10 @@ def main() -> None:
         drop_last=False,
     )
 
-    payload = torch.load(os.path.join(args.source_dir, "data.pth"), map_location="cpu")
+    payload_path = os.path.join(args.source_dir, "artifacts", "data.pth")
+    if not os.path.exists(payload_path):
+        payload_path = os.path.join(args.source_dir, "data.pth")
+    payload = torch.load(payload_path, map_location="cpu")
     syn_images = payload["images"]
     syn_labels = payload["labels"]
     num_classes = int(torch.unique(syn_labels).numel())

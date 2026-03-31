@@ -7,7 +7,7 @@ from tap import Tap
 class FullDatasetCfg(Tap):
     dataset: str
     model: str
-    data_root: str = "data/datasets"
+    data_root: str = "datasets"
     workers_per_gpu: int = 16
     batch_size_per_gpu: int = 128
     real_res: int = 256

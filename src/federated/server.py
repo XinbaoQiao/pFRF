@@ -48,9 +48,29 @@ class FederatedServer:
         self.experiment_name = experiment_name
         self.output_dir = os.path.join(output_root, experiment_name)
         os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(self.artifacts_dir, exist_ok=True)
+        os.makedirs(self.vis_dir, exist_ok=True)
+
+    @property
+    def artifacts_dir(self) -> str:
+        return os.path.join(self.output_dir, "artifacts")
+
+    @property
+    def vis_dir(self) -> str:
+        return os.path.join(self.output_dir, "vis")
+
+    @property
+    def eval_dir(self) -> str:
+        return os.path.join(self.output_dir, "eval")
+
+    def artifacts_path(self, name: str) -> str:
+        return os.path.join(self.artifacts_dir, name)
+
+    def eval_path(self, *parts: str) -> str:
+        return os.path.join(self.eval_dir, *parts)
 
     def save_json(self, name: str, payload: dict):
-        path = os.path.join(self.output_dir, name)
+        path = self.artifacts_path(name)
         with open(path, "w") as f:
             f.write(json.dumps(payload, indent=4))
 
@@ -341,7 +361,9 @@ class FederatedServer:
                 a_states[c] = a
 
                 if stop_tol_xi is not None:
-                    xi_delta = float(np.linalg.norm(xi - xi_prev) / (np.linalg.norm(xi_prev) + stop_eps))
+                    xi_prev_mean = np.mean(xi_prev, axis=0)
+                    xi_mean = np.mean(xi, axis=0)
+                    xi_delta = float(np.linalg.norm(xi_mean - xi_prev_mean) / (np.linalg.norm(xi_prev_mean) + stop_eps))
                     if update_support_weights and stop_tol_a is not None:
                         a_delta = float(np.linalg.norm(a - a_prev, ord=1))
                         is_stable = (xi_delta < stop_tol_xi) and (a_delta < stop_tol_a)
@@ -629,7 +651,7 @@ class FederatedServer:
             syn_images = syn_images.detach().cpu()
             syn_labels = syn_labels.detach().cpu()
 
-        vis_dir = os.path.join(self.output_dir, "vis")
+        vis_dir = self.vis_dir
         os.makedirs(vis_dir, exist_ok=True)
         images_01 = syn_images.clamp(0, 1)
         vutils.save_image(
@@ -657,5 +679,5 @@ class FederatedServer:
             labels=syn_labels,
             losses=losses,
         )
-        torch.save(out.__dict__, os.path.join(self.output_dir, "data.pth"))
+        torch.save(out.__dict__, self.artifacts_path("data.pth"))
         return out

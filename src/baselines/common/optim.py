@@ -4,9 +4,8 @@ import torch
 
 
 def scaled_linear_head_lr(base_lr: float, batch_size: int, ref_batch_size: int = 256) -> float:
-    batch = max(int(batch_size), 1)
-    ref = max(int(ref_batch_size), 1)
-    return float(base_lr) * (float(batch) / float(ref))
+    del batch_size, ref_batch_size
+    return float(base_lr)
 
 
 def build_linear_head_optimizer(
@@ -16,7 +15,7 @@ def build_linear_head_optimizer(
     momentum: float = 0.9,
     weight_decay: float = 0.0,
 ) -> tuple[torch.optim.Optimizer, float]:
-    effective_lr = scaled_linear_head_lr(base_lr=base_lr, batch_size=batch_size)
+    effective_lr = float(base_lr)
     optimizer = torch.optim.Adam(
         list(parameters),
         lr=effective_lr,
@@ -32,7 +31,7 @@ def build_sgd_linear_head_optimizer(
     momentum: float = 0.9,
     weight_decay: float = 0.0,
 ) -> tuple[torch.optim.Optimizer, float]:
-    effective_lr = scaled_linear_head_lr(base_lr=base_lr, batch_size=batch_size)
+    effective_lr = float(base_lr)
     optimizer = torch.optim.SGD(
         list(parameters),
         lr=effective_lr,

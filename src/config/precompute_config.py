@@ -8,7 +8,7 @@ class PrecomputeCfg(Tap):
     dataset: str
     model: str
 
-    data_root: str = "data/datasets"
+    data_root: str = "datasets"
     job_tag: str = "distillation"
 
     num_workers: int = 16
@@ -25,4 +25,3 @@ class PrecomputeCfg(Tap):
     eval_it: int = 1
 
     device_count: int = torch.cuda.device_count()
-

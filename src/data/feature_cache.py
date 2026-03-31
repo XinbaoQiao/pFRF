@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import hashlib
 from dataclasses import dataclass
 from typing import Callable
 
@@ -46,6 +47,11 @@ def shared_feature_cache_dir(output_root: str) -> str:
 
 def federated_feature_cache_client_file_name(client_id: int) -> str:
     return f"client_{int(client_id):04d}.pt"
+
+
+def _client_indices_fingerprint(indices: list[int]) -> str:
+    joined = ",".join(str(int(v)) for v in indices)
+    return hashlib.sha1(joined.encode("utf-8")).hexdigest()
 
 
 def federated_feature_cache_hparams_dir_name(spec: FederatedFeatureCacheSpec) -> str:
@@ -298,7 +304,11 @@ def load_cached_federated_client_features(
     client_id: int,
     expected_num_samples: int,
     expected_num_features: int,
+    expected_client_indices: list[int] | None = None,
 ) -> tuple[str, torch.Tensor, torch.Tensor] | None:
+    expected_fingerprint = (
+        _client_indices_fingerprint(expected_client_indices) if expected_client_indices is not None else None
+    )
     for cache_dir in readable_cache_dirs:
         cache_path = find_federated_cache_file_in_dir(cache_dir, spec=spec, client_id=client_id)
         if cache_path is None:
@@ -311,12 +321,17 @@ def load_cached_federated_client_features(
             continue
         feats = payload.get("features")
         labels = payload.get("labels")
+        meta = payload.get("meta", {})
         if not torch.is_tensor(feats) or not torch.is_tensor(labels):
             continue
         if int(labels.shape[0]) != int(expected_num_samples):
             continue
         if feats.ndim != 2 or int(feats.shape[1]) != int(expected_num_features):
             continue
+        if expected_fingerprint is not None:
+            got_fingerprint = str(meta.get("client_indices_fingerprint", ""))
+            if got_fingerprint != expected_fingerprint:
+                continue
         return cache_path, feats.to(dtype=torch.float32, copy=False), labels.to(dtype=torch.long, copy=False)
     return None
 
@@ -328,6 +343,7 @@ def save_federated_client_features(
     client_id: int,
     features: torch.Tensor,
     labels: torch.Tensor,
+    client_indices: list[int] | None = None,
 ) -> str:
     os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, federated_feature_cache_client_file_name(client_id))
@@ -347,6 +363,9 @@ def save_federated_client_features(
                 "crop_res": int(spec.crop_res),
                 "train_crop_mode": str(spec.train_crop_mode),
                 "num_samples": int(labels.shape[0]),
+                "client_indices_fingerprint": (
+                    _client_indices_fingerprint(client_indices) if client_indices is not None else ""
+                ),
             },
         },
         cache_path,

@@ -9,7 +9,7 @@ class DistillCfg(Tap):
     model: str
     num_workers: int = 16
 
-    data_root: str = "data/datasets"
+    data_root: str = "datasets"
     job_tag: str = "distillation"
 
     ipc: int = 1

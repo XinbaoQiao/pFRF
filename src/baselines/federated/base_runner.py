@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -61,22 +63,31 @@ class FederatedRunArgs:
     local_batch_size: int
     feature_batch_size: int
     local_lr: float
+    fl_optimizer: str
+    fl_scheduler: str
     local_momentum: float
     local_weight_decay: float
     grad_clip_norm: float
     use_amp: bool
     num_clients: int
     partition: str
+    non_iid: bool
+    partition_train_ratio: float
+    partition_alpha: float
     dirichlet_alpha: float
     dirichlet_balance: bool
     dirichlet_min_size: int
     shard_per_client: int
     classes_per_client: int
+    join_ratio: float
+    random_join_ratio: bool
+    client_drop_rate: float
     patience_rounds: int
     min_delta: float
     warmup_rounds: int
     eval_batch_size: int
     eval_num_workers: int
+    eval_on_global_test: bool
     local_num_workers: int
     prox_mu: float
     afl_ri_reg: float
@@ -86,6 +97,7 @@ class FederatedRunArgs:
     pcl_weight: float
     pcl_temp: float
     pcl_momentum: float
+    proto_lamda: float
     ntd_weight: float
     ntd_temp: float
     scaffold_eta: float
@@ -125,6 +137,113 @@ def _state_numel(state: dict[str, torch.Tensor]) -> int:
     return int(total)
 
 
+def _pfllib_partition_indices(
+    labels: list[int],
+    num_clients: int,
+    num_classes: int,
+    *,
+    niid: bool,
+    balance: bool,
+    partition: str | None,
+    class_per_client: int,
+    alpha: float,
+    seed: int,
+) -> list[list[int]]:
+    rng = np.random.default_rng(int(seed))
+    labels_np = np.asarray(labels, dtype=np.int64)
+    idxs = np.arange(len(labels_np), dtype=np.int64)
+    least_samples = int(min(10 / (1 - 0.75), len(labels_np) / max(int(num_clients), 1) / 2))
+    if not niid:
+        partition = "pat"
+        class_per_client = int(num_classes)
+    if partition == "pat":
+        idx_for_each_class = [idxs[labels_np == i] for i in range(num_classes)]
+        class_num_per_client = [int(class_per_client) for _ in range(num_clients)]
+        dataidx_map: dict[int, np.ndarray] = {}
+        for cls in range(num_classes):
+            selected_clients = [cid for cid in range(num_clients) if class_num_per_client[cid] > 0]
+            if len(selected_clients) == 0:
+                break
+            selected_clients = selected_clients[: int(np.ceil((num_clients / num_classes) * class_per_client))]
+            num_all_samples = len(idx_for_each_class[cls])
+            num_selected_clients = max(len(selected_clients), 1)
+            num_per = num_all_samples / float(num_selected_clients)
+            if balance:
+                num_samples = [int(num_per) for _ in range(num_selected_clients - 1)]
+            else:
+                low = max(int(num_per / 10), max(least_samples // max(num_classes, 1), 1))
+                high = max(int(num_per), low + 1)
+                num_samples = rng.integers(low=low, high=high, size=num_selected_clients - 1).tolist()
+            num_samples.append(num_all_samples - int(sum(num_samples)))
+            start = 0
+            for client_id, n_take in zip(selected_clients, num_samples):
+                end = start + int(n_take)
+                chunk = idx_for_each_class[cls][start:end]
+                if client_id not in dataidx_map:
+                    dataidx_map[client_id] = chunk.copy()
+                else:
+                    dataidx_map[client_id] = np.append(dataidx_map[client_id], chunk, axis=0)
+                start = end
+                class_num_per_client[client_id] -= 1
+        return [list(map(int, dataidx_map.get(j, np.asarray([], dtype=np.int64)).tolist())) for j in range(num_clients)]
+    if partition == "dir":
+        min_size = 0
+        n_total = len(labels_np)
+        while min_size < least_samples:
+            idx_batch = [[] for _ in range(num_clients)]
+            for cls in range(num_classes):
+                idx_c = np.where(labels_np == cls)[0]
+                rng.shuffle(idx_c)
+                props = rng.dirichlet(np.repeat(float(alpha), num_clients))
+                props = np.asarray(
+                    [p * (len(idx_j) < n_total / max(num_clients, 1)) for p, idx_j in zip(props, idx_batch)],
+                    dtype=np.float64,
+                )
+                if float(props.sum()) <= 0:
+                    props = np.ones((num_clients,), dtype=np.float64)
+                props = props / props.sum()
+                cut = (np.cumsum(props) * len(idx_c)).astype(int)[:-1]
+                idx_batch = [idx_j + idx.tolist() for idx_j, idx in zip(idx_batch, np.split(idx_c, cut))]
+            min_size = min((len(idx_j) for idx_j in idx_batch), default=0)
+        return [[int(v) for v in client] for client in idx_batch]
+    if partition == "exdir":
+        cpc = int(class_per_client)
+        min_size_per_label = 0
+        min_require_size_per_label = max(cpc * num_clients // max(num_classes, 1) // 2, 1)
+        clientidx_map: dict[int, list[int]] = {}
+        while min_size_per_label < min_require_size_per_label:
+            for k in range(num_classes):
+                clientidx_map[k] = []
+            for i in range(num_clients):
+                labelidx = rng.choice(np.arange(num_classes), size=cpc, replace=False)
+                for k in labelidx.tolist():
+                    clientidx_map[int(k)].append(i)
+            min_size_per_label = min((len(clientidx_map[k]) for k in range(num_classes)), default=0)
+        min_size = 0
+        while min_size < 10:
+            idx_batch = [[] for _ in range(num_clients)]
+            for k in range(num_classes):
+                idx_k = np.where(labels_np == k)[0]
+                rng.shuffle(idx_k)
+                proportions = rng.dirichlet(np.repeat(float(alpha), num_clients))
+                proportions = np.asarray(
+                    [
+                        p * (len(idx_j) < len(labels_np) / max(num_clients, 1) and j in clientidx_map[k])
+                        for j, (p, idx_j) in enumerate(zip(proportions, idx_batch))
+                    ],
+                    dtype=np.float64,
+                )
+                if float(proportions.sum()) <= 0:
+                    mask = np.asarray([j in clientidx_map[k] for j in range(num_clients)], dtype=np.float64)
+                    proportions = mask if float(mask.sum()) > 0 else np.ones((num_clients,), dtype=np.float64)
+                proportions = proportions / proportions.sum()
+                cut = (np.cumsum(proportions) * len(idx_k)).astype(int)[:-1]
+                idx_batch = [idx_j + idx.tolist() for idx_j, idx in zip(idx_batch, np.split(idx_k, cut))]
+            min_size = min((len(idx_j) for idx_j in idx_batch), default=0)
+        return [[int(v) for v in client] for client in idx_batch]
+    raise NotImplementedError(partition)
+
+
 class _AFLLinearHead(nn.Module):
     def __init__(self, in_dim: int, num_classes: int):
         super().__init__()
@@ -149,9 +268,11 @@ class BaseFederatedRunner:
         freeze_backbone(self.backbone)
         self.num_classes = int(self.train_dataset.num_classes)
         self.partition_payload = self._prepare_partitions()
-        validate_partition_payload(self.partition_payload, expected_num_samples=len(self.train_dataset))
+        if not bool(self.partition_payload.get("pfllib_partition", False)):
+            validate_partition_payload(self.partition_payload, expected_num_samples=len(self.train_dataset))
         self.client_indices = self.partition_payload["client_indices"]
         self.client_sizes = [len(v) for v in self.client_indices]
+        self.client_test_indices = self.partition_payload.get("client_test_indices", [])
         self.cache_spec = FederatedFeatureCacheSpec(
             dataset=str(self.args.dataset),
             model=str(self.args.model),
@@ -208,6 +329,8 @@ class BaseFederatedRunner:
         labels = get_labels_for_partition(self.train_dataset)
         cache_dir = os.path.join(self.args.output_root, "partition_cache")
         ensure_dir(cache_dir)
+        raw_partition = str(self.args.partition).lower().strip()
+        use_pfllib = raw_partition in {"pat", "dir", "exdir"}
         cache_name = (
             f"{self.args.dataset}_{self.args.num_clients}_{self.args.partition}_"
             f"{self.args.dirichlet_alpha:.4f}_"
@@ -215,9 +338,60 @@ class BaseFederatedRunner:
             f"min{int(self.args.dirichlet_min_size)}_"
             f"sh{int(self.args.shard_per_client)}_"
             f"cpc{int(self.args.classes_per_client)}_"
+            f"palpha{float(self.args.partition_alpha):.4f}_"
+            f"ptr{float(self.args.partition_train_ratio):.2f}_"
+            f"niid{1 if bool(self.args.non_iid) else 0}_"
             f"seed{int(self.args.seeds[0])}.json"
         )
         cache_path = os.path.join(cache_dir, cache_name)
+        if use_pfllib:
+            if os.path.exists(cache_path):
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    cached = copy.deepcopy(json.load(f))
+                if "client_test_indices" in cached:
+                    return cached
+            splits = _pfllib_partition_indices(
+                labels=labels,
+                num_clients=int(self.args.num_clients),
+                num_classes=int(self.num_classes),
+                niid=bool(self.args.non_iid),
+                balance=bool(self.args.dirichlet_balance),
+                partition=str(raw_partition),
+                class_per_client=int(self.args.classes_per_client),
+                alpha=float(self.args.partition_alpha),
+                seed=int(self.args.seeds[0]),
+            )
+            rng = np.random.default_rng(int(self.args.seeds[0]) + 97)
+            train_splits = []
+            test_splits = []
+            ratio = float(getattr(self.args, "partition_train_ratio", 0.75))
+            ratio = min(max(ratio, 0.1), 0.99)
+            for client in splits:
+                arr = np.asarray(client, dtype=np.int64)
+                if int(arr.shape[0]) > 0:
+                    rng.shuffle(arr)
+                cut = int(round(float(arr.shape[0]) * ratio))
+                cut = min(max(cut, 1), int(arr.shape[0])) if int(arr.shape[0]) > 0 else 0
+                train_splits.append([int(v) for v in arr[:cut].tolist()])
+                test_splits.append([int(v) for v in arr[cut:].tolist()])
+            payload = {
+                "dataset": self.args.dataset,
+                "num_clients": int(self.args.num_clients),
+                "partition": str(raw_partition),
+                "dirichlet_alpha": float(self.args.partition_alpha),
+                "dirichlet_balance": bool(self.args.dirichlet_balance),
+                "dirichlet_min_size": int(self.args.dirichlet_min_size),
+                "shard_per_client": int(self.args.shard_per_client),
+                "classes_per_client": int(self.args.classes_per_client),
+                "seed": int(self.args.seeds[0]),
+                "pfllib_partition": True,
+                "client_indices": train_splits,
+                "client_test_indices": test_splits,
+                "client_sizes": [int(len(v)) for v in train_splits],
+            }
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            return payload
         return build_or_load_partitions(
             cache_path=cache_path,
             dataset_name=self.args.dataset,
@@ -239,6 +413,7 @@ class BaseFederatedRunner:
             client_id=client_id,
             expected_num_samples=int(self.client_sizes[client_id]),
             expected_num_features=int(self.num_feats),
+            expected_client_indices=[int(v) for v in self.client_indices[client_id]],
         )
         return None if cached is None else cached[0]
 
@@ -257,7 +432,7 @@ class BaseFederatedRunner:
             shuffle=True,
             num_workers=local_workers,
             batch_size=int(batch_size or self.args.local_batch_size),
-            drop_last=False,
+            drop_last=True,
             pin_memory=local_workers > 0,
             persistent_workers=local_workers > 0 and (not is_heavy),
         )
@@ -283,6 +458,7 @@ class BaseFederatedRunner:
             client_id=client_id,
             expected_num_samples=int(self.client_sizes[client_id]),
             expected_num_features=int(self.num_feats),
+            expected_client_indices=[int(v) for v in self.client_indices[client_id]],
         )
         if cached is not None:
             path, feats, labels = cached
@@ -301,11 +477,51 @@ class BaseFederatedRunner:
             client_id=client_id,
             features=z_all,
             labels=y_all,
+            client_indices=[int(v) for v in self.client_indices[client_id]],
         )
         return z_all, y_all
 
     def _evaluate(self, head: nn.Module) -> tuple[float, float]:
         head.eval()
+        if (not bool(self.args.eval_on_global_test)) and bool(self.partition_payload.get("pfllib_partition", False)) and len(self.client_test_indices) == int(self.args.num_clients):
+            correct1 = 0
+            correct5 = 0
+            total = 0
+            max_eval_batches = max(int(self.args.smoke_max_eval_batches), 0)
+            with torch.no_grad():
+                for client_id in range(int(self.args.num_clients)):
+                    idx = self.client_test_indices[client_id]
+                    if len(idx) == 0:
+                        continue
+                    ds = Subset(self.train_dataset, idx)
+                    loader = DataLoader(
+                        ds,
+                        batch_size=int(self.args.eval_batch_size),
+                        shuffle=True,
+                        num_workers=int(self.args.eval_num_workers),
+                        drop_last=False,
+                        pin_memory=int(self.args.eval_num_workers) > 0,
+                        persistent_workers=int(self.args.eval_num_workers) > 0,
+                    )
+                    seen = 0
+                    for x, y in loader:
+                        x = x.cuda(non_blocking=True)
+                        y = y.cuda(non_blocking=True)
+                        x = self.train_dataset.normalize(x)
+                        z = self.backbone(x)
+                        logits = head(z)
+                        pred1 = logits.argmax(dim=1)
+                        correct1 += int((pred1 == y).sum().item())
+                        if self.num_classes >= 5:
+                            top5 = logits.topk(k=5, dim=1).indices
+                            correct5 += int((top5 == y.unsqueeze(1)).any(dim=1).sum().item())
+                        total += int(y.shape[0])
+                        seen += 1
+                        if max_eval_batches > 0 and seen >= max_eval_batches:
+                            break
+            top1 = float(correct1 / max(total, 1))
+            top5 = float(correct5 / max(total, 1)) if self.num_classes >= 5 else 0.0
+            return top1, top5
         correct1 = 0
         correct5 = 0
         total = 0
@@ -338,7 +554,7 @@ class BaseFederatedRunner:
                 "c_global": _zeros_like_state(global_state),
                 "c_local": [_zeros_like_state(global_state) for _ in range(self.args.num_clients)],
             }
-        if self.args.method == "fedpcl":
+        if self.args.method in {"fedpcl", "fedproto"}:
             return {
                 "prototypes": torch.zeros((self.num_classes, self.num_feats), dtype=torch.float32),
                 "proto_counts": torch.zeros((self.num_classes,), dtype=torch.float32),
@@ -417,6 +633,24 @@ class BaseFederatedRunner:
             pcl_flops = 6 * batch_size * int(self.num_feats) + 4 * batch_size * int(self.num_classes)
             prof.add_local_flops(pcl_flops, bucket="extra")
             return float(self.args.pcl_weight) * (align + contra)
+        if self.args.method == "fedproto":
+            protos = method_state.get("prototypes", None)
+            counts = method_state.get("proto_counts", None)
+            if protos is None or counts is None:
+                return zero
+            if float(counts.sum().item()) <= 0:
+                return zero
+            protos = protos.to(device=z.device, dtype=z.dtype)
+            valid = counts.to(device=z.device, dtype=z.dtype) > 0
+            label_valid = valid[labels]
+            if not bool(label_valid.any()):
+                return zero
+            target = z.detach().clone()
+            target[label_valid] = protos[labels[label_valid]]
+            mse = nn.functional.mse_loss(z, target)
+            proto_flops = 3 * batch_size * int(self.num_feats)
+            prof.add_local_flops(proto_flops, bucket="extra")
+            return float(self.args.proto_lamda) * mse
         return zero
 
     def _apply_scaffold_correction(self, local_head: nn.Module, method_state: dict, client_id: int, prof: ProfileMeter):
@@ -437,7 +671,7 @@ class BaseFederatedRunner:
             prof.add_local_flops(corr_flops, bucket="extra")
 
     def _collect_client_aux(self, z: torch.Tensor, y: torch.Tensor, aux: dict):
-        if self.args.method == "fedpcl":
+        if self.args.method in {"fedpcl", "fedproto"}:
             if "proto_sum" not in aux:
                 aux["proto_sum"] = torch.zeros((self.num_classes, self.num_feats), device=z.device, dtype=torch.float32)
                 aux["proto_cnt"] = torch.zeros((self.num_classes,), device=z.device, dtype=torch.float32)
@@ -470,12 +704,32 @@ class BaseFederatedRunner:
         global_head.load_state_dict(global_state)
         global_head.eval()
         assert_head_only_trainable(self.backbone, local_head)
-        optimizer, effective_lr = build_sgd_linear_head_optimizer(
-            local_head.parameters(),
-            base_lr=float(self.args.local_lr),
-            batch_size=int(self.args.local_batch_size),
-        )
-        scheduler = build_constant_scheduler(optimizer)
+        fl_optimizer = str(getattr(self.args, "fl_optimizer", "sgd")).lower()
+        fl_scheduler = str(getattr(self.args, "fl_scheduler", "constant")).lower()
+        if fl_optimizer == "adam":
+            optimizer, effective_lr = build_linear_head_optimizer(
+                local_head.parameters(),
+                base_lr=float(self.args.local_lr),
+                batch_size=int(self.args.local_batch_size),
+                momentum=float(self.args.local_momentum),
+                weight_decay=float(self.args.local_weight_decay),
+            )
+        elif fl_optimizer == "sgd":
+            optimizer, effective_lr = build_sgd_linear_head_optimizer(
+                local_head.parameters(),
+                base_lr=float(self.args.local_lr),
+                batch_size=int(self.args.local_batch_size),
+                momentum=float(self.args.local_momentum),
+                weight_decay=float(self.args.local_weight_decay),
+            )
+        else:
+            raise ValueError(f"Unsupported FL optimizer: {self.args.fl_optimizer}")
+        if fl_scheduler == "cosine":
+            scheduler = build_cosine_scheduler(optimizer, total_epochs=max(int(self.args.local_epochs), 1))
+        elif fl_scheduler == "constant":
+            scheduler = build_constant_scheduler(optimizer)
+        else:
+            raise ValueError(f"Unsupported FL scheduler: {self.args.fl_scheduler}")
         scaler = GradScaler(enabled=bool(self.args.use_amp))
         prof = ProfileMeter()
         aux = {}
@@ -582,6 +836,7 @@ class BaseFederatedRunner:
             scheduler.step()
         local_state = _clone_state_dict_to_cpu(local_head)
         upload = {
+            "client_id": int(client_id),
             "state": local_state,
             "num_samples": int(client_num_samples),
             "flops": prof.local_flops,
@@ -627,8 +882,8 @@ class BaseFederatedRunner:
                 avg_delta = avg_delta / float(len(uploads))
                 c_global[k] = (c_global[k].to(dtype=torch.float32) + avg_delta).cpu()
                 algo_flops += int(avg_delta.numel() * 2)
-            for client_id, u in enumerate(uploads):
-                c_local[client_id] = {k: v.cpu() for k, v in u["new_c_i"].items()}
+            for u in uploads:
+                c_local[int(u["client_id"])] = {k: v.cpu() for k, v in u["new_c_i"].items()}
         if self.args.method == "fedpcl":
             old_protos = method_state.get("prototypes", torch.zeros((self.num_classes, self.num_feats), dtype=torch.float32))
             proto_sum = torch.zeros((self.num_classes, self.num_feats), dtype=torch.float32)
@@ -651,6 +906,19 @@ class BaseFederatedRunner:
                 method_state["prototypes"] = protos
             method_state["proto_counts"] = proto_cnt
             algo_flops += int((self.num_classes * self.num_feats + self.num_classes) * (2 * len(uploads) + 2))
+        if self.args.method == "fedproto":
+            proto_sum = torch.zeros((self.num_classes, self.num_feats), dtype=torch.float32)
+            proto_cnt = torch.zeros((self.num_classes,), dtype=torch.float32)
+            for u in uploads:
+                if "proto_sum" in u:
+                    proto_sum += u["proto_sum"].to(dtype=torch.float32)
+                    proto_cnt += u["proto_cnt"].to(dtype=torch.float32)
+            valid = proto_cnt > 0
+            protos = torch.zeros_like(proto_sum)
+            protos[valid] = proto_sum[valid] / proto_cnt[valid][:, None].clamp_min(1e-12)
+            method_state["prototypes"] = protos
+            method_state["proto_counts"] = proto_cnt
+            algo_flops += int((self.num_classes * self.num_feats + self.num_classes) * (2 * len(uploads) + 1))
         if self.args.method == "ccvr":
             cls_cnt = torch.zeros((self.num_classes,), dtype=torch.float32)
             for u in uploads:
@@ -679,7 +947,7 @@ class BaseFederatedRunner:
             down += c_bytes * len(uploads)
             for u in uploads:
                 up += state_dict_bytes(u["delta_c"])
-        if self.args.method == "fedpcl":
+        if self.args.method in {"fedpcl", "fedproto"}:
             proto = method_state.get("prototypes", torch.zeros((self.num_classes, self.num_feats), dtype=torch.float32))
             cnt = method_state.get("proto_counts", torch.zeros((self.num_classes,), dtype=torch.float32))
             down += int(proto.numel() * proto.element_size() + cnt.numel() * cnt.element_size()) * len(uploads)
@@ -699,7 +967,7 @@ class BaseFederatedRunner:
         if self.args.method == "scaffold":
             down += state_dict_bytes(method_state["c_global"])
             up += state_dict_bytes(upload["delta_c"])
-        if self.args.method == "fedpcl":
+        if self.args.method in {"fedpcl", "fedproto"}:
             proto = method_state.get("prototypes", torch.zeros((self.num_classes, self.num_feats), dtype=torch.float32))
             cnt = method_state.get("proto_counts", torch.zeros((self.num_classes,), dtype=torch.float32))
             down += int(proto.numel() * proto.element_size() + cnt.numel() * cnt.element_size())
@@ -718,7 +986,7 @@ class BaseFederatedRunner:
         algo_flops = 0
         if self.args.method == "scaffold":
             algo_flops += params * (num_clients + 2)
-        if self.args.method == "fedpcl":
+        if self.args.method in {"fedpcl", "fedproto"}:
             proto_elems = int(self.num_classes * self.num_feats)
             cnt_elems = int(self.num_classes)
             algo_flops += (proto_elems + cnt_elems) * (2 * num_clients + 1)
@@ -730,6 +998,20 @@ class BaseFederatedRunner:
             "setup": 0,
             "total": int(base_flops + algo_flops),
         }
+
+    def _select_clients_for_round(self, rng: np.random.Generator) -> list[int]:
+        all_ids = list(range(int(self.args.num_clients)))
+        if len(all_ids) == 0:
+            return []
+        join_ratio = float(getattr(self.args, "join_ratio", 1.0))
+        join_ratio = min(max(join_ratio, 0.0), 1.0)
+        fixed_num = max(int(int(self.args.num_clients) * join_ratio), 1)
+        if bool(getattr(self.args, "random_join_ratio", False)):
+            num_join = int(rng.integers(fixed_num, int(self.args.num_clients) + 1))
+        else:
+            num_join = fixed_num
+        picked = rng.choice(np.asarray(all_ids, dtype=np.int64), size=num_join, replace=False)
+        return [int(v) for v in np.atleast_1d(picked).tolist()]
 
     def _ccvr_collect_stats(self) -> tuple[torch.Tensor, torch.Tensor, int]:
         sum_feat = torch.zeros((self.num_classes, self.num_feats), device="cuda", dtype=torch.float64)
@@ -930,6 +1212,7 @@ class BaseFederatedRunner:
             min_delta=self.args.min_delta,
             warmup_rounds=self.args.warmup_rounds,
         )
+        enable_early_stop = str(self.args.method).lower() != "fedavg"
         rounds = []
         curve_x = []
         curve_y = []
@@ -937,12 +1220,21 @@ class BaseFederatedRunner:
         stop_round = self.args.max_rounds
         converged_round = self.args.max_rounds
         converged_acc = 0.0
+        rng_round = np.random.default_rng(int(seed) + 13)
         for r in range(1, int(self.args.max_rounds) + 1):
+            selected_clients = self._select_clients_for_round(rng_round)
             uploads = []
-            for client_id in range(self.args.num_clients):
+            for client_id in selected_clients:
                 up = self._train_one_client(client_id=client_id, global_state=global_state, method_state=method_state)
                 uploads.append(up)
                 meter.merge_flops_breakdown(up.get("flops_breakdown", {}))
+            if len(uploads) == 0:
+                continue
+            drop_rate = min(max(float(getattr(self.args, "client_drop_rate", 0.0)), 0.0), 0.99)
+            if drop_rate > 0:
+                keep_num = max(int((1.0 - drop_rate) * len(uploads)), 1)
+                keep_idx = rng_round.choice(np.arange(len(uploads)), size=keep_num, replace=False)
+                uploads = [uploads[int(i)] for i in np.atleast_1d(keep_idx).tolist()]
             down_b, up_b = self._round_comm_cost(global_state=global_state, uploads=uploads, method_state=method_state)
             one_down, one_up = self._round_comm_cost_one_client(
                 global_state=global_state,
@@ -1006,10 +1298,15 @@ class BaseFederatedRunner:
             if seed_rank == 0:
                 curve_x.append(r)
                 curve_y.append(float(top1))
-            stop_info = stopper.update(round_id=r, acc=top1, chance_acc=(1.0 / max(self.num_classes, 1)))
-            if stop_info["is_converged"]:
-                stop_round = int(r)
-                break
+            if enable_early_stop:
+                stop_info = stopper.update(round_id=r, acc=top1, chance_acc=(1.0 / max(self.num_classes, 1)))
+                if stop_info["is_converged"]:
+                    stop_round = int(r)
+                    break
+            else:
+                stopper.best_acc = max(float(stopper.best_acc), float(top1))
+                if float(top1) >= float(stopper.best_acc):
+                    stopper.best_round = int(r)
             stop_round = int(r)
         if self.args.method == "ccvr":
             global_state, ccvr_flops = self._run_ccvr_calibration(global_state)

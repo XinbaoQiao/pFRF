@@ -10,4 +10,5 @@ from .optim import (
     scaled_linear_head_lr,
 )
 from .partition_cache import build_or_load_partitions, get_labels_for_partition, validate_partition_payload
+from .path_sanitize import sanitize_path_for_log
 from .profiling import ProfileMeter, linear_head_step_flops, state_dict_bytes

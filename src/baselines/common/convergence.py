@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+DEFAULT_WARMUP_ACC_FLOOR = 0.10
+
 
 class EarlyStopper:
     def __init__(self, patience_rounds: int, min_delta: float, warmup_rounds: int):
@@ -11,9 +13,10 @@ class EarlyStopper:
         self.bad_rounds = 0
 
     def update(self, round_id: int, acc: float, chance_acc: float | None = None) -> dict:
-        # Adaptive warmup: if accuracy is still below chance level (1 / num_classes),
-        # keep warmup active and do not count bad rounds.
-        below_chance = bool(chance_acc is not None and float(acc) < float(chance_acc))
+        # Keep warmup active while accuracy is still clearly undertrained.
+        # By default, any top-1 below 10% is treated as warmup even if chance is lower.
+        warmup_threshold = max(float(chance_acc) if chance_acc is not None else 0.0, float(DEFAULT_WARMUP_ACC_FLOOR))
+        below_chance = bool(float(acc) < warmup_threshold)
         improved = acc > (self.best_acc + self.min_delta)
         if improved:
             self.best_acc = float(acc)
@@ -34,4 +37,5 @@ class EarlyStopper:
             "best_round": int(self.best_round),
             "bad_rounds": int(self.bad_rounds),
             "below_chance": below_chance,
+            "warmup_threshold": float(warmup_threshold),
         }

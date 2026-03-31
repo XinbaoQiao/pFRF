@@ -667,6 +667,18 @@ def main(cfg: FedCfg):
     dataset_name = str(cfg.dataset).lower()
     effective_stats_batch_size = int(cfg.stats_batch_size)
     effective_stats_num_workers = int(cfg.stats_num_workers)
+    effective_dirichlet_alpha = float(cfg.dirichlet_alpha)
+    effective_dirichlet_balance = bool(cfg.dirichlet_balance)
+    if (
+        dataset_name == "cifar10"
+        and str(cfg.partition) == "dirichlet"
+        and abs(float(cfg.dirichlet_alpha) - 0.01) < 1e-12
+    ):
+        effective_dirichlet_alpha = 0.05
+        print(
+            f"[override] set dirichlet_alpha: {cfg.dirichlet_alpha} -> {effective_dirichlet_alpha} "
+            f"(dataset={cfg.dataset})"
+        )
     if effective_stats_batch_size != int(cfg.stats_batch_size):
         print(
             f"[override] set stats_batch_size: {cfg.stats_batch_size} -> {effective_stats_batch_size} "
@@ -723,7 +735,7 @@ def main(cfg: FedCfg):
     if cfg.partition == "iid":
         splits = split_iid(len(train_dataset), cfg.num_clients, rng=rng)
     elif cfg.partition == "dirichlet":
-        splits = split_dirichlet(labels, cfg.num_clients, cfg.dirichlet_alpha, rng=rng)
+        splits = split_dirichlet(labels, cfg.num_clients, effective_dirichlet_alpha, rng=rng)
     else:
         raise NotImplementedError(cfg.partition)
     split_build_dt = time.perf_counter() - split_build_t0
@@ -745,8 +757,8 @@ def main(cfg: FedCfg):
         train_crop_mode=str(cfg.train_crop_mode),
         num_clients=int(cfg.num_clients),
         partition=str(cfg.partition),
-        dirichlet_alpha=float(cfg.dirichlet_alpha),
-        dirichlet_balance=bool(cfg.dirichlet_balance),
+        dirichlet_alpha=float(effective_dirichlet_alpha),
+        dirichlet_balance=bool(effective_dirichlet_balance),
         dirichlet_min_size=int(cfg.dirichlet_min_size),
         shard_per_client=int(cfg.shard_per_client),
         classes_per_client=int(cfg.classes_per_client),
@@ -782,6 +794,7 @@ def main(cfg: FedCfg):
             client_id=client_id,
             expected_num_samples=int(len(idx)),
             expected_num_features=int(num_feats),
+            expected_client_indices=[int(v) for v in idx],
         )
         if cached is not None:
             cache_path, feats, y_all = cached
@@ -809,6 +822,7 @@ def main(cfg: FedCfg):
             client_id=client_id,
             features=z_all,
             labels=y_all,
+            client_indices=[int(v) for v in idx],
         )
         return z_all, y_all
 
@@ -950,7 +964,7 @@ def main(cfg: FedCfg):
         "count_all": int(loss_targets.count_all),
         "ipc": int(loss_targets.ipc),
     }
-    torch.save(barycenter_targets_payload, os.path.join(server.output_dir, "barycenter_targets.pth"))
+    torch.save(barycenter_targets_payload, server.artifacts_path("barycenter_targets.pth"))
     if loss_cache_dir is not None:
         torch.save(barycenter_targets_payload, os.path.join(loss_cache_dir, "global_barycenter_targets.pth"))
     if cfg.verify_centers:
@@ -1057,7 +1071,7 @@ def main(cfg: FedCfg):
             dataset=test_dataset,
             partition=cfg.partition,
             num_clients=cfg.num_clients,
-            dirichlet_alpha=cfg.dirichlet_alpha,
+            dirichlet_alpha=effective_dirichlet_alpha,
             seed=int(cfg.seed) + int(cfg.personalize_eval_partition_seed_offset),
         )
         client_test_loaders = build_client_test_loaders(
@@ -1128,8 +1142,8 @@ def main(cfg: FedCfg):
             "ipc": cfg.ipc,
             "num_clients": cfg.num_clients,
             "partition": cfg.partition,
-            "dirichlet_alpha": cfg.dirichlet_alpha,
-            "dirichlet_balance": bool(cfg.dirichlet_balance),
+            "dirichlet_alpha": float(effective_dirichlet_alpha),
+            "dirichlet_balance": bool(effective_dirichlet_balance),
             "dirichlet_min_size": int(cfg.dirichlet_min_size),
             "shard_per_client": int(cfg.shard_per_client),
             "classes_per_client": int(cfg.classes_per_client),
@@ -1170,7 +1184,9 @@ def main(cfg: FedCfg):
             ),
         },
     )
-    torch.save({"fc_state_dict": eval_out["fc_state_dict"]}, os.path.join(server.output_dir, "linear_probe.pth"))
+    linear_probe_dir = server.eval_path("linear_probe")
+    os.makedirs(linear_probe_dir, exist_ok=True)
+    torch.save({"fc_state_dict": eval_out["fc_state_dict"]}, os.path.join(linear_probe_dir, "default.pth"))
 
     if bool(cfg.enable_adapter_eval):
         adapter_epochs = int(cfg.adapter_epochs) if int(cfg.adapter_epochs) > 0 else int(cfg.eval_epochs)
@@ -1212,13 +1228,14 @@ def main(cfg: FedCfg):
                 "adapter_summary": adapter_out["adapter_summary"],
             },
         )
+        os.makedirs(server.eval_path("adapter_probe"), exist_ok=True)
         torch.save(
             {
                 "fc_state_dict": adapter_out["fc_state_dict"],
                 "adapter_state_dict": adapter_out["adapter_state_dict"],
                 "adapter_summary": adapter_out["adapter_summary"],
             },
-            os.path.join(server.output_dir, "adapter_probe.pth"),
+            os.path.join(server.eval_path("adapter_probe"), "default.pth"),
         )
 
 

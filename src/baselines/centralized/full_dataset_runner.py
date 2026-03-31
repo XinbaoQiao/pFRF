@@ -6,7 +6,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.cuda.amp import autocast
+from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 
 from baselines.common import (
@@ -14,6 +14,7 @@ from baselines.common import (
     build_linear_head_optimizer,
     ensure_dir,
     mean_std,
+    sanitize_path_for_log,
     set_global_seed,
     write_json,
     write_jsonl,
@@ -24,10 +25,50 @@ from data.dataloaders import get_dataset
 from models import get_fc, get_model
 
 
+def _normalize_train_mode(raw: str) -> str:
+    low = str(raw).lower().strip()
+    alias = {
+        "linearprobe": "linear_probe",
+        "linear_probe": "linear_probe",
+        "linearprobing": "linear_probe",
+        "lp": "linear_probe",
+        "finetune": "finetune",
+        "fine_tune": "finetune",
+        "finetuning": "finetune",
+        "ft": "finetune",
+    }
+    mode = alias.get(low, low)
+    if mode not in {"linear_probe", "finetune"}:
+        raise ValueError(f"Unsupported full_dataset train_mode: {raw}")
+    return mode
+
+
+def _train_mode_output_dir_name(train_mode: str) -> str:
+    if train_mode == "linear_probe":
+        return "linearprobing"
+    if train_mode == "finetune":
+        return "finetuning"
+    raise ValueError(f"Unsupported full_dataset train_mode: {train_mode}")
+
+
+def _full_dataset_out_dir(args, train_mode: str) -> str:
+    layout = str(getattr(args, "full_dataset_output_layout", "legacy")).lower().strip()
+    if layout == "by_mode":
+        return os.path.join(
+            args.output_root,
+            "full_dataset",
+            _train_mode_output_dir_name(train_mode),
+            args.dataset,
+            args.model,
+        )
+    return os.path.join(args.output_root, "full_dataset", args.dataset, args.model)
+
+
 def _log_progress(args, message: str) -> None:
     ts = datetime.now().strftime("%F %T")
+    train_mode = _normalize_train_mode(getattr(args, "train_mode", "linear_probe"))
     print(
-        f"[{ts}] [full_dataset] dataset={args.dataset} model={args.model} {message}",
+        f"[{ts}] [full_dataset] train_mode={train_mode} dataset={args.dataset} model={args.model} {message}",
         flush=True,
     )
 
@@ -82,6 +123,7 @@ def _parse_seed_list(raw) -> list[int]:
 
 
 def run_full_dataset(args) -> dict:
+    train_mode = _normalize_train_mode(getattr(args, "train_mode", "linear_probe"))
     _log_progress(args, "starting run")
     train_dataset, test_dataset = get_dataset(
         name=args.dataset,
@@ -128,14 +170,17 @@ def run_full_dataset(args) -> dict:
     test_loader = DataLoader(test_dataset, **test_kwargs)
     backbone, num_feats = get_model(name=args.model, distributed=False)
     _log_progress(args, f"loaded backbone num_feats={int(num_feats)}")
-    for p in backbone.parameters():
-        p.requires_grad_(False)
-    use_feature_cache = bool(getattr(args, "cache_features", False))
+    if train_mode == "linear_probe":
+        for p in backbone.parameters():
+            p.requires_grad_(False)
+    use_feature_cache = bool(getattr(args, "cache_features", False)) and train_mode == "linear_probe"
+    if bool(getattr(args, "cache_features", False)) and train_mode != "linear_probe":
+        _log_progress(args, "cache_features ignored for finetune mode")
     train_epochs = max(int(getattr(args, "max_rounds", 200)), 1)
     _log_progress(
         args,
         (
-            f"config cache_features={use_feature_cache} "
+            f"config train_mode={train_mode} cache_features={use_feature_cache} "
             f"train_batch_size={int(args.local_batch_size)} eval_batch_size={int(args.eval_batch_size)} "
             f"train_epochs={train_epochs}"
         ),
@@ -153,14 +198,14 @@ def run_full_dataset(args) -> dict:
         return x
 
     seed_list = _parse_seed_list(args.seeds)
-    out_dir = os.path.join(args.output_root, "full_dataset", args.dataset, args.model)
+    out_dir = _full_dataset_out_dir(args, train_mode)
     ensure_dir(out_dir)
     feature_cache_path = _shared_full_dataset_cache_path(args)
     cached_feats = None
     cached_labels = None
     if use_feature_cache:
         if os.path.exists(feature_cache_path):
-            _log_progress(args, f"loading cached features from {feature_cache_path}")
+            _log_progress(args, f"loading cached features from {sanitize_path_for_log(feature_cache_path)}")
             payload = torch.load(feature_cache_path, map_location="cpu")
             cached_feats = payload["features"]
             cached_labels = payload["labels"]
@@ -172,7 +217,7 @@ def run_full_dataset(args) -> dict:
                 ),
             )
         else:
-            _log_progress(args, f"building feature cache at {feature_cache_path}")
+            _log_progress(args, f"building feature cache at {sanitize_path_for_log(feature_cache_path)}")
             cached_feats, cached_labels = forward_features(
                 loader=train_loader_no_shuffle,
                 backbone=backbone,
@@ -194,18 +239,38 @@ def run_full_dataset(args) -> dict:
     for seed in seed_list:
         _log_progress(args, f"seed={int(seed)} start")
         set_global_seed(int(seed))
+        if train_mode == "finetune":
+            if seed_results:
+                del backbone
+                torch.cuda.empty_cache()
+                backbone, _ = get_model(name=args.model, distributed=False)
+            for p in backbone.parameters():
+                p.requires_grad_(True)
+            backbone.train()
+        else:
+            backbone.eval()
         head = get_fc(num_feats=num_feats, num_classes=num_classes, distributed=False)
         head.train()
-        optimizer, _ = build_linear_head_optimizer(
-            head.parameters(),
-            base_lr=float(args.local_lr),
-            batch_size=int(args.local_batch_size),
-        )
+        if train_mode == "linear_probe":
+            optimizer, _ = build_linear_head_optimizer(
+                head.parameters(),
+                base_lr=float(args.local_lr),
+                batch_size=int(args.local_batch_size),
+            )
+        else:
+            optimizer = torch.optim.AdamW(
+                [
+                    {"params": list(backbone.parameters()), "lr": float(getattr(args, "backbone_lr", 1e-4))},
+                    {"params": list(head.parameters()), "lr": float(args.local_lr)},
+                ],
+                weight_decay=float(getattr(args, "weight_decay", 0.0)),
+            )
         scheduler = build_cosine_scheduler(optimizer, total_epochs=train_epochs)
+        scaler = GradScaler(enabled=bool(getattr(args, "use_amp", True)))
         best_top1 = 0.0
         best_top5 = 0.0
         bad = 0
-        chance_acc = 1.0 / max(num_classes, 1)
+        chance_acc = max(1.0 / max(num_classes, 1), 0.10)
         flops = 0
         rounds = []
         for epoch in range(1, train_epochs + 1):
@@ -237,7 +302,7 @@ def run_full_dataset(args) -> dict:
                     seen_batches += 1
                     if max_train_batches > 0 and seen_batches >= max_train_batches:
                         break
-            else:
+            elif train_mode == "linear_probe":
                 for x, y in train_loader:
                     x = x.cuda(non_blocking=True)
                     y = y.cuda(non_blocking=True)
@@ -257,6 +322,29 @@ def run_full_dataset(args) -> dict:
                     step_flops = linear_head_step_flops(int(y.shape[0]), int(num_feats), int(num_classes))
                     flops_round += int(step_flops)
                     flops += int(step_flops)
+                    seen_batches += 1
+                    if max_train_batches > 0 and seen_batches >= max_train_batches:
+                        break
+            else:
+                backbone.train()
+                for x, y in train_loader:
+                    x = x.cuda(non_blocking=True)
+                    y = y.cuda(non_blocking=True)
+                    optimizer.zero_grad(set_to_none=True)
+                    with autocast(enabled=bool(getattr(args, "use_amp", True))):
+                        x = _train_preprocess(x)
+                        z = backbone(x)
+                        logits = head(z)
+                        loss = nn.functional.cross_entropy(logits, y)
+                    scaler.scale(loss).backward()
+                    if float(getattr(args, "grad_clip_norm", 0.0)) > 0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(
+                            list(backbone.parameters()) + list(head.parameters()),
+                            max_norm=float(getattr(args, "grad_clip_norm", 0.0)),
+                        )
+                    scaler.step(optimizer)
+                    scaler.update()
                     seen_batches += 1
                     if max_train_batches > 0 and seen_batches >= max_train_batches:
                         break
@@ -285,6 +373,7 @@ def run_full_dataset(args) -> dict:
                     "val_top5": float(top5),
                     "head_train_flops_round": int(flops_round),
                     "head_train_flops_cum": int(flops),
+                    "train_mode": train_mode,
                     "distill_flops_round_est": 0,
                 }
             )
@@ -317,6 +406,7 @@ def run_full_dataset(args) -> dict:
         seed_results.append(
             {
                 "seed": int(seed),
+                "train_mode": train_mode,
                 "top1": float(best_top1),
                 "top5": float(best_top5),
                 "train_flops_total": int(flops),
@@ -327,6 +417,7 @@ def run_full_dataset(args) -> dict:
     flops_mean, flops_std = mean_std([float(v["train_flops_total"]) for v in seed_results])
     summary = {
         "method": "full_dataset",
+        "train_mode": train_mode,
         "dataset": args.dataset,
         "model": args.model,
         "top1_mean": float(top1_mean),
@@ -338,5 +429,8 @@ def run_full_dataset(args) -> dict:
         "seed_results": seed_results,
     }
     write_json(os.path.join(out_dir, "result_summary.json"), summary)
-    _log_progress(args, f"saved summary to {os.path.join(out_dir, 'result_summary.json')}")
+    _log_progress(
+        args,
+        f"saved summary to {sanitize_path_for_log(os.path.join(out_dir, 'result_summary.json'))}",
+    )
     return summary

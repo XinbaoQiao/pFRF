@@ -3,12 +3,25 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+CONDA_ENV_NAME="${CONDA_ENV_NAME:-fdd}"
 DATA_ROOT="${PROJECT_ROOT}/datasets"
 BASE_OUTPUT_ROOT="${BASE_OUTPUT_ROOT:-${PROJECT_ROOT}/output}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 RUN_ROOT_OVERRIDE="${RUN_ROOT_OVERRIDE:-}"
 
 RUN_FIRST_TASK_ONLY="${RUN_FIRST_TASK_ONLY:-0}"
+
+if command -v conda >/dev/null 2>&1; then
+  CONDA_BASE="$(conda info --base 2>/dev/null || true)"
+  if [[ -n "${CONDA_BASE}" && -f "${CONDA_BASE}/etc/profile.d/conda.sh" ]]; then
+    # shellcheck disable=SC1090
+    source "${CONDA_BASE}/etc/profile.d/conda.sh"
+    conda activate "${CONDA_ENV_NAME}" || {
+      echo "Failed to activate conda env: ${CONDA_ENV_NAME}" >&2
+      exit 1
+    }
+  fi
+fi
 
 RUN_TS="$(date +%Y%m%d_%H%M%S)"
 if [[ -n "${RUN_ROOT_OVERRIDE}" ]]; then

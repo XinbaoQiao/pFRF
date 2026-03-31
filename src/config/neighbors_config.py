@@ -6,7 +6,7 @@ class NeighborsCfg(Tap):
     dataset: str
     model: str
     job_tag: str = "distillation"
-    data_root: str = "data/datasets"
+    data_root: str = "datasets"
     num_workers: int = 16
     real_batch_size: int = 100
     real_res: int = 256

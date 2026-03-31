@@ -22,8 +22,10 @@ except Exception:
     pipeline = None
 
 try:
-    from torchvision.models import resnet50
+    from torchvision.models import ResNet18_Weights, resnet18, resnet50
 except Exception:
+    ResNet18_Weights = None
+    resnet18 = None
     resnet50 = None
 
 from .dino import vision_transformer
@@ -101,7 +103,45 @@ def _load_mocov3_resnet50() -> nn.Module:
     return model
 
 
+def _normalize_model_name(name: str) -> str:
+    normalized = name.lower().strip().replace(" ", "").replace("-", "_").replace(".", "_")
+    alias = {
+        "mobilenetv3_large": "mobilenetv3_large",
+        "mobileone_s4": "mobileone_s4",
+        "repvit_m1_5": "repvit_m1_5",
+        "efficientformer_l1": "efficientformer_l1",
+        "resnet18": "resnet18",
+        "resnet_18": "resnet18",
+        "resnet18_tv": "resnet18_torchvision",
+        "resnet18_torchvision": "resnet18_torchvision",
+    }
+    return alias.get(normalized, normalized)
+
+
+def _load_torchvision_resnet18_pretrained() -> nn.Module:
+    if resnet18 is None:
+        raise ModuleNotFoundError(
+            "torchvision is not installed. Install torchvision to use resnet18_torchvision."
+        )
+    if ResNet18_Weights is not None:
+        model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+    else:
+        model = resnet18(pretrained=True)
+    model.fc = nn.Identity()
+    return model
+
+
+def _create_timm_backbone(model_name: str, num_feat: int) -> tuple[nn.Module, int]:
+    if timm is None:
+        raise ModuleNotFoundError(
+            f"timm is not installed. Install timm to use {model_name}."
+        )
+    model = timm.create_model(model_name, pretrained=True, num_classes=0)
+    return model, num_feat
+
+
 def get_model(name: str, distributed: bool) -> Tuple[nn.Module, int]:
+    name = _normalize_model_name(name)
     if name == "dino_vits8":
         model = torch.hub.load("facebookresearch/dino:main", "dino_vits8")
         num_feat = 384
@@ -205,6 +245,27 @@ def get_model(name: str, distributed: bool) -> Tuple[nn.Module, int]:
     elif name == "mocov3_resnet50":
         model = _load_mocov3_resnet50()
         num_feat = 2048
+    elif name == "mobilenetv3_large":
+        model, num_feat = _create_timm_backbone(
+            "mobilenetv3_large_100.ra_in1k", num_feat=1280
+        )
+    elif name == "mobileone_s4":
+        model, num_feat = _create_timm_backbone(
+            "mobileone_s4.apple_in1k", num_feat=2048
+        )
+    elif name == "repvit_m1_5":
+        model, num_feat = _create_timm_backbone(
+            "repvit_m1_5.dist_300e_in1k", num_feat=512
+        )
+    elif name == "efficientformer_l1":
+        model, num_feat = _create_timm_backbone(
+            "efficientformer_l1.snap_dist_in1k", num_feat=448
+        )
+    elif name == "resnet18":
+        model, num_feat = _create_timm_backbone("resnet18.a1_in1k", num_feat=512)
+    elif name == "resnet18_torchvision":
+        model = _load_torchvision_resnet18_pretrained()
+        num_feat = 512
     else:
         raise NotImplementedError("Model {} not implemented".format(name))
 

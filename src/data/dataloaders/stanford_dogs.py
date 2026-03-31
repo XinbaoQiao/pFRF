@@ -26,7 +26,7 @@ class StanfordDogs(BaseRealDataset):
         res=256,
         crop_res: int = 256,
         crop_mode: Literal["center", "random"] = "center",
-        data_root: str = "data/datasets",
+        data_root: str = "datasets",
     ):
         super().__init__()
         self.root = f"{data_root}/StanfordDogs"

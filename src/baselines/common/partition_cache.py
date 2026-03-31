@@ -246,6 +246,55 @@ def split_dirichlet(
     return repaired
 
 
+def split_dirichlet_afl(
+    labels: list[int],
+    k: int,
+    alpha: float,
+    rng: np.random.Generator,
+    *,
+    min_size: int,
+    max_retries: int = 100000,
+) -> list[list[int]]:
+    labels_np = np.asarray(labels, dtype=np.int64)
+    num_classes = int(labels_np.max()) + 1
+    total_samples = int(labels_np.shape[0])
+    min_size = max(int(min_size), 0)
+    if k <= 0:
+        raise ValueError(f"num_clients must be positive, got {k}.")
+    if total_samples <= 0:
+        return [[] for _ in range(k)]
+
+    retry_budget = max(int(max_retries), 1)
+    for _try in range(retry_budget):
+        idx_batch = [[] for _ in range(k)]
+        min_client_size = 0
+        for cls in range(num_classes):
+            idx_c = np.where(labels_np == cls)[0]
+            rng.shuffle(idx_c)
+            if len(idx_c) == 0:
+                continue
+            proportions = rng.dirichlet(np.repeat(float(alpha), k))
+            proportions = np.asarray(
+                [p * (len(idx_j) < (total_samples / k)) for p, idx_j in zip(proportions, idx_batch)],
+                dtype=np.float64,
+            )
+            if float(proportions.sum()) <= 0:
+                proportions = np.ones((k,), dtype=np.float64)
+            proportions = proportions / proportions.sum()
+            split_points = (np.cumsum(proportions) * len(idx_c)).astype(int)[:-1]
+            chunks = np.split(idx_c, split_points)
+            idx_batch = [idx_j + chunk.tolist() for idx_j, chunk in zip(idx_batch, chunks)]
+            min_client_size = min((len(idx_j) for idx_j in idx_batch), default=0)
+        if min_client_size >= min_size:
+            for client_id in range(k):
+                rng.shuffle(idx_batch[client_id])
+            return idx_batch
+    raise RuntimeError(
+        f"Failed to build AFL-style Dirichlet partition with alpha={alpha}, min_size={min_size} "
+        f"after {retry_budget} retries."
+    )
+
+
 def build_or_load_partitions(
     cache_path: str,
     dataset_name: str,
@@ -279,12 +328,38 @@ def build_or_load_partitions(
         if partition == "iid":
             splits = split_iid(n=len(labels), k=num_clients, rng=rng)
         elif partition == "dirichlet":
+            if bool(dirichlet_balance):
+                splits = split_dirichlet(
+                    labels=labels,
+                    k=num_clients,
+                    alpha=dirichlet_alpha,
+                    rng=rng,
+                    balanced=True,
+                    min_size=int(dirichlet_min_size),
+                )
+            else:
+                splits = split_dirichlet_afl(
+                    labels=labels,
+                    k=num_clients,
+                    alpha=dirichlet_alpha,
+                    rng=rng,
+                    min_size=int(dirichlet_min_size),
+                )
+        elif partition in {"dirichlet_balanced", "dirichlet_legacy"}:
             splits = split_dirichlet(
                 labels=labels,
                 k=num_clients,
                 alpha=dirichlet_alpha,
                 rng=rng,
                 balanced=bool(dirichlet_balance),
+                min_size=int(dirichlet_min_size),
+            )
+        elif partition in {"dirichlet_afl", "dirichlet_pfl", "afl_dirichlet"}:
+            splits = split_dirichlet_afl(
+                labels=labels,
+                k=num_clients,
+                alpha=dirichlet_alpha,
+                rng=rng,
                 min_size=int(dirichlet_min_size),
             )
         elif partition == "shards":

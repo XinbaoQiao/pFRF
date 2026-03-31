@@ -1,4 +1,5 @@
 import glob
+import json
 import os
 import random
 
@@ -173,9 +174,13 @@ def main(cfg: ProjectorCfg):
         syn_data_path = syn_set_files[0]
         run_dir = "/".join(syn_data_path.split("/")[:-1])
     else:
-        run_dir = "/".join(syn_data_path.split("/")[:-1])
+        syn_parent_dir = os.path.dirname(os.path.abspath(syn_data_path))
+        if os.path.basename(syn_parent_dir) == "artifacts":
+            run_dir = os.path.dirname(syn_parent_dir)
+        else:
+            run_dir = syn_parent_dir
 
-    save_dir = os.path.join(run_dir, "projector")
+    save_dir = os.path.join(run_dir, "eval", "projector")
     save_file = os.path.join(save_dir, "{}.pth".format(cfg.eval_model))
     projector_file = os.path.join(save_dir, "projector_{}.pth".format(cfg.eval_model))
     classifier_file = os.path.join(save_dir, "classifier_{}.pth".format(cfg.eval_model))
@@ -267,6 +272,26 @@ def main(cfg: ProjectorCfg):
     torch.save({"state_dict": classifier.state_dict()}, classifier_file)
     if cfg.use_projector and projector is not None:
         torch.save({"state_dict": projector.state_dict()}, projector_file)
+    summary_file = os.path.join(save_dir, "result_summary.json")
+    with open(summary_file, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "eval_model": cfg.eval_model,
+                "distill_model": cfg.distill_model,
+                "top1": top1,
+                "top5": top5,
+                "top1_percent": top1 * 100.0,
+                "top5_percent": top5 * 100.0,
+                "syn_data_path": syn_data_path,
+                "use_projector": bool(cfg.use_projector),
+                "classifier_steps": int(cfg.classifier_steps),
+                "projector_steps": int(cfg.projector_steps) if cfg.use_projector else 0,
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+    print(f"Readable summary saved to {summary_file}")
 
     print(f"Results saved to {save_file}")
     print("Top 1: {:.2f}".format(top1 * 100))

@@ -295,7 +295,7 @@ def run_lgm(args) -> dict:
         best_top1 = 0.0
         best_top5 = 0.0
         bad = 0
-        chance_acc = 1.0 / max(num_classes, 1)
+        chance_acc = max(1.0 / max(num_classes, 1), 0.10)
         head_flops = 0
         rounds = []
         for epoch in range(1, int(args.max_rounds) + 1):
